@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum HouseStatus {
+  ACTIVE
+  COMPLETED
+}
+
+enum DoorState {
+  LOCKED
+  UNLOCKED
+  TRANSITIONED
+}
+
+enum LivingRoomState {
+  NOT_SEATED
+  PARTIALLY_SEATED
+  BOTH_SEATED
+  STILLNESS_IN_PROGRESS
+  COMPLETED
+}
+
+enum ParticipantSlot {
+  playerA
+  playerB
+}
+
+enum FoyerPhase {
+  DARK
+  LIGHT_IN_PROGRESS
+  LIT
+  NOTE_ENTRY
+  NOTE_LOCKED
+}
+
+model HouseSession {
+  id                           String          @id @default(cuid())
+  inviteCode                   String          @unique
+  status                       HouseStatus     @default(ACTIVE)
+  doorState                    DoorState       @default(LOCKED)
+  doorUnlockedBy               String?
+  doorUnlockedAt               DateTime?
+  livingRoomState              LivingRoomState @default(NOT_SEATED)
+  livingRoomCompletedAt        DateTime?
+  livingRoomStillnessStartedAt DateTime?
+  createdAt                    DateTime        @default(now())
+  updatedAt                    DateTime        @updatedAt
+  participants                 Participant[]
+  foyer                        FoyerState?
+}
+
+model Participant {
+  id             String          @id @default(cuid())
+  houseSessionId String
+  slot           ParticipantSlot
+  connected      Boolean         @default(false)
+  joinedAt       DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  houseSession HouseSession @relation(fields: [houseSessionId], references: [id], onDelete: Cascade)
+
+  @@unique([houseSessionId, slot])
+  @@index([houseSessionId])
+}
+
+model FoyerState {
+  houseSessionId             String     @id
+  phase                      FoyerPhase @default(DARK)
+  holdThresholdMs            Int        @default(4000)
+
+  overlapStartedAt           DateTime?
+  overlapDeadlineAt          DateTime?
+  playerAHolding             Boolean    @default(false)
+  playerBHolding             Boolean    @default(false)
+
+  notePrompt                 String     @default("When I'm breaking down, I need you to say...")
+  noteDraft                  String     @default("")
+  noteDraftedByParticipantId String?
+  noteDraftedAt              DateTime?
+  noteConfirmA               Boolean    @default(false)
+  noteConfirmB               Boolean    @default(false)
+
+  lightActivatedAt           DateTime?
+  crisisSentence             String?
+  crisisSentenceSubmittedAt  DateTime?
+  playerIDsInvolved          Json?
+  roomCompletionStatus       String     @default("INCOMPLETE")
+
+  createdAt                  DateTime   @default(now())
+  updatedAt                  DateTime   @updatedAt
+
+  houseSession               HouseSession @relation(fields: [houseSessionId], references: [id], onDelete: Cascade)
+}
