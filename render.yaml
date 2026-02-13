@@ -15,7 +15,7 @@ services:
       - key: PORT
         value: "4000"
       - key: FRONTEND_ORIGIN
-        value: "https://je-vous-aime-frontend.onrender.com"
+        value: "https://je-vous-aime.onrender.com"
       # Do NOT put secrets here. Set `FIREBASE_SERVICE_ACCOUNT_KEY` on Render dashboard if you still use Firebase.
     healthCheckPath: /health
 
@@ -27,3 +27,6 @@ services:
     publishPath: frontend/dist
     region: oregon
     plan: free
+    envVars:
+      - key: VITE_BACKEND_URL
+        value: "https://jevousaime-backend.onrender.com"
