@@ -259,6 +259,14 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: err?.message || 'Server error.' });
 });
 
-app.listen(port, () => {
-  console.log(`Backend listening on http://localhost:${port}`);
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err?.stack || err);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err?.stack || err);
+});
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Backend listening on http://0.0.0.0:${port}`);
 });
