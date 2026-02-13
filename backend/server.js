@@ -267,6 +267,151 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err?.stack || err);
 });
 
-app.listen(port, '0.0.0.0', () => {
+import http from 'http';
+import { Server as IOServer } from 'socket.io';
+
+// In-memory entrance room store for the locked-door ritual
+const entranceRooms = Object.create(null);
+
+function makeEntranceRoom(roomId, ownerSocketId) {
+  return {
+    roomId,
+    locked: true,
+    unlockedBy: null,
+    users: [ownerSocketId],
+    scene: 'ENTRANCE'
+  };
+}
+
+function findRoomBySocket(socketId) {
+  return Object.values(entranceRooms).find((r) => r.users.includes(socketId));
+}
+
+const server = http.createServer(app);
+
+const io = new IOServer(server, {
+  cors: { origin: frontendOrigin }
+});
+
+// Express route to inspect entrance room state (simple read-only)
+app.get('/entrance/:roomId', (req, res) => {
+  const roomId = String(req.params.roomId || '').toUpperCase();
+  const room = entranceRooms[roomId];
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+  return res.json(room);
+});
+
+io.on('connection', (socket) => {
+  console.log('socket connected', socket.id);
+
+  socket.on('createRoom', (cb) => {
+    let roomId;
+    let attempts = 0;
+    do {
+      roomId = generateRoomId();
+      attempts++;
+    } while (entranceRooms[roomId] && attempts < 10);
+
+    if (entranceRooms[roomId]) {
+      const err = 'Failed to generate unique room ID.';
+      console.error(err);
+      if (typeof cb === 'function') cb({ error: err });
+      return;
+    }
+
+    const room = makeEntranceRoom(roomId, socket.id);
+    entranceRooms[roomId] = room;
+    socket.join(roomId);
+    console.log(`Created entrance room ${roomId} by ${socket.id}`);
+    if (typeof cb === 'function') cb({ ok: true, roomId });
+    io.to(roomId).emit('roomUpdated', room);
+  });
+
+  socket.on('joinRoom', (roomIdRaw, cb) => {
+    const roomId = String(roomIdRaw || '').toUpperCase();
+    const room = entranceRooms[roomId];
+    if (!room) {
+      if (typeof cb === 'function') cb({ error: 'invalidRoom' });
+      return;
+    }
+
+    if (room.users.includes(socket.id)) {
+      socket.join(roomId);
+      if (typeof cb === 'function') cb({ ok: true, room });
+      return;
+    }
+
+    if (room.users.length >= 2) {
+      if (typeof cb === 'function') cb({ error: 'roomFull' });
+      return;
+    }
+
+    room.users.push(socket.id);
+    socket.join(roomId);
+    console.log(`${socket.id} joined room ${roomId}`);
+    if (typeof cb === 'function') cb({ ok: true, room });
+    io.to(roomId).emit('roomUpdated', room);
+  });
+
+  socket.on('validateKey', (data, cb) => {
+    try {
+      const { roomId: rawId, typedKey } = data || {};
+      const roomId = String(rawId || '').toUpperCase();
+      const room = entranceRooms[roomId];
+
+      if (!room) {
+        if (typeof cb === 'function') cb({ error: 'invalidRoom' });
+        return;
+      }
+
+      if (!room.users.includes(socket.id)) {
+        if (typeof cb === 'function') cb({ error: 'notInRoom' });
+        return;
+      }
+
+      const normalized = String(typedKey || '').trim().toLowerCase();
+      const secret = 'communication';
+
+      if (!room.locked) {
+        if (typeof cb === 'function') cb({ error: 'alreadyUnlocked' });
+        return;
+      }
+
+      if (normalized === secret) {
+        room.locked = false;
+        room.unlockedBy = socket.id;
+        room.scene = 'ROOM_SETUP';
+        io.to(roomId).emit('doorUnlocked', { unlockedBy: socket.id });
+        io.to(roomId).emit('roomUpdated', room);
+        if (typeof cb === 'function') cb({ ok: true });
+        console.log(`Room ${roomId} unlocked by ${socket.id}`);
+        return;
+      }
+
+      // Wrong key
+      socket.emit('wrongKey');
+      if (typeof cb === 'function') cb({ ok: false });
+    } catch (err) {
+      console.error('validateKey error', err);
+      if (typeof cb === 'function') cb({ error: 'serverError' });
+    }
+  });
+
+  socket.on('disconnect', () => {
+    const room = findRoomBySocket(socket.id);
+    if (room) {
+      room.users = room.users.filter((s) => s !== socket.id);
+      io.to(room.roomId).emit('roomUpdated', room);
+      console.log(`${socket.id} disconnected from ${room.roomId}`);
+      // Clean up empty rooms
+      if (room.users.length === 0) {
+        delete entranceRooms[room.roomId];
+        console.log(`Deleted empty entrance room ${room.roomId}`);
+      }
+    }
+  });
+});
+
+server.listen(port, '0.0.0.0', () => {
   console.log(`Backend listening on http://0.0.0.0:${port}`);
 });
