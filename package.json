@@ -1,0 +1,14 @@
+{
+  "name": "je-vous-aime-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "install:all": "npm --prefix frontend install && npm --prefix backend install",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "build:frontend": "npm --prefix frontend run build"
+  },
+  "dependencies": {
+    "firebase": "^12.9.0"
+  }
+}

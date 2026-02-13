@@ -1,0 +1,264 @@
+import 'dotenv/config';
+import cors from 'cors';
+import express from 'express';
+import { admin } from './lib/firebase.js';
+import {
+  generateRoomId,
+  roomRef,
+  createRoom,
+  joinRoom,
+  getRoomById,
+  updateSceneData,
+  markReady,
+  updatePresence,
+  isValidRoomId
+} from './lib/roomService.js';
+
+const app = express();
+const port = Number(process.env.PORT || 4000);
+const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+
+const db = admin.firestore();
+const timestamp = admin.firestore.FieldValue.serverTimestamp;
+
+app.use(cors({ origin: frontendOrigin }));
+app.use(express.json());
+
+function normalizeRole(role) {
+  return String(role || '').trim().toLowerCase();
+}
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/rooms/:roomId/exists', async (req, res) => {
+  const snap = await roomRef(req.params.roomId).get();
+  res.json({ exists: snap.exists });
+});
+
+app.post('/rooms/create', async (req, res) => {
+  try {
+    const { uid } = req.body || {};
+    if (!uid) {
+      return res.status(400).json({ error: 'uid is required.' });
+    }
+
+    const result = await createRoom(uid);
+    return res.status(201).json(result);
+  } catch (error) {
+    const status = error.message.includes('UID is required') ? 400 : 500;
+    return res.status(status).json({ error: error.message || 'Failed to create room.' });
+  }
+});
+
+app.post('/rooms/join', async (req, res) => {
+  try {
+    const { roomId, uid } = req.body || {};
+    if (!roomId || !uid) {
+      return res.status(400).json({ error: 'roomId and uid are required.' });
+    }
+
+    if (!isValidRoomId(roomId)) {
+      return res.status(400).json({ error: 'Invalid roomId format. Must be 8 alphanumeric characters.' });
+    }
+
+    const result = await joinRoom(roomId, uid);
+    return res.json(result);
+  } catch (error) {
+    let status = 500;
+    if (error.message.includes('does not exist')) {
+      status = 404;
+    } else if (error.message.includes('full')) {
+      status = 409;
+    } else if (error.message.includes('required')) {
+      status = 400;
+    }
+    return res.status(status).json({ error: error.message || 'Failed to join room.' });
+  }
+});
+
+app.get('/rooms/:roomId', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const uid = req.query.uid || req.headers['x-user-id'];
+
+    if (!uid) {
+      return res.status(401).json({ error: 'User ID is required. Pass as ?uid=<uid> or X-User-Id header.' });
+    }
+
+    const result = await getRoomById(roomId, uid);
+    return res.json(result);
+  } catch (error) {
+    let status = 500;
+    if (error.message.includes('not found')) {
+      status = 404;
+    } else if (error.message.includes('Unauthorized')) {
+      status = 403;
+    } else if (error.message.includes('required')) {
+      status = 400;
+    }
+    return res.status(status).json({ error: error.message || 'Failed to retrieve room.' });
+  }
+});
+
+app.post('/rooms/continue', async (req, res) => {
+  const { roomId } = req.body || {};
+  if (!roomId) {
+    return res.status(400).json({ error: 'roomId is required.' });
+  }
+
+  await roomRef(roomId).update({ flowStep: 'role' });
+  return res.json({ ok: true });
+});
+
+app.post('/rooms/role', async (req, res) => {
+  const { roomId, uid, role } = req.body || {};
+  if (!roomId || !uid || !role) {
+    return res.status(400).json({ error: 'roomId, uid, role are required.' });
+  }
+
+  const normalized = normalizeRole(role);
+  const ref = roomRef(roomId);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      throw new Error('Room not found.');
+    }
+
+    const data = snap.data() || {};
+    const roles = data.roles || {};
+    const taken = Object.values(roles);
+
+    if (roles[uid] && roles[uid] !== normalized) {
+      throw new Error('Role already selected.');
+    }
+
+    if (!roles[uid] && taken.includes(normalized)) {
+      throw new Error('Role already taken.');
+    }
+
+    tx.update(ref, { [`roles.${uid}`]: normalized });
+
+    const nextRoles = { ...roles, [uid]: normalized };
+    const uniqueRoleCount = new Set(Object.values(nextRoles)).size;
+    if (Object.keys(nextRoles).length >= 2 && uniqueRoleCount >= 2) {
+      tx.update(ref, { flowStep: 'experience' });
+    }
+  });
+
+  return res.json({ ok: true });
+});
+
+app.post('/rooms/scene-data', async (req, res) => {
+  try {
+    const { roomId, uid, path, value } = req.body || {};
+    if (!roomId || !uid || !path) {
+      return res.status(400).json({ error: 'roomId, uid, and path are required.' });
+    }
+
+    const result = await updateSceneData(roomId, uid, path, value);
+    return res.json(result);
+  } catch (error) {
+    let status = 500;
+    if (error.message.includes('not found')) {
+      status = 404;
+    } else if (error.message.includes('Unauthorized')) {
+      status = 403;
+    } else if (error.message.includes('required')) {
+      status = 400;
+    }
+    return res.status(status).json({ error: error.message || 'Failed to update scene data.' });
+  }
+});
+
+app.post('/rooms/ready', async (req, res) => {
+  try {
+    const { roomId, uid, ready } = req.body || {};
+    if (!roomId || !uid) {
+      return res.status(400).json({ error: 'roomId and uid are required.' });
+    }
+
+    const result = await markReady(roomId, uid, ready);
+    return res.json(result);
+  } catch (error) {
+    let status = 500;
+    if (error.message.includes('not found')) {
+      status = 404;
+    } else if (error.message.includes('Unauthorized')) {
+      status = 403;
+    } else if (error.message.includes('required')) {
+      status = 400;
+    }
+    return res.status(status).json({ error: error.message || 'Failed to mark ready.' });
+  }
+});
+
+app.post('/rooms/presence', async (req, res) => {
+  try {
+    const { roomId, uid } = req.body || {};
+    if (!roomId || !uid) {
+      return res.status(400).json({ error: 'roomId and uid are required.' });
+    }
+
+    const result = await updatePresence(roomId, uid);
+    return res.json(result);
+  } catch (error) {
+    let status = 500;
+    if (error.message.includes('not found')) {
+      status = 404;
+    } else if (error.message.includes('Unauthorized')) {
+      status = 403;
+    } else if (error.message.includes('required')) {
+      status = 400;
+    }
+    return res.status(status).json({ error: error.message || 'Failed to update presence.' });
+  }
+});
+
+app.post('/rooms/advance', async (req, res) => {
+  const { roomId, maxSceneIndex } = req.body || {};
+  if (!roomId || typeof maxSceneIndex !== 'number') {
+    return res.status(400).json({ error: 'roomId and numeric maxSceneIndex are required.' });
+  }
+
+  const ref = roomRef(roomId);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      throw new Error('Room not found.');
+    }
+
+    const data = snap.data() || {};
+    const participants = Object.keys(data.participants || {});
+    const ready = data.sceneReady || {};
+    const allReady = participants.length >= 2 && participants.every((id) => ready[id]);
+
+    if (!allReady) {
+      return;
+    }
+
+    const current = data.sceneIndex || 0;
+    const next = current + 1;
+
+    if (next > maxSceneIndex) {
+      tx.update(ref, { flowStep: 'completed', sceneReady: {} });
+      return;
+    }
+
+    tx.update(ref, { sceneIndex: next, sceneReady: {} });
+  });
+
+  return res.json({ ok: true });
+});
+
+app.use((err, _req, res, _next) => {
+  const status = /not found|does not exist|already/.test((err?.message || '').toLowerCase()) ? 400 : 500;
+  res.status(status).json({ error: err?.message || 'Server error.' });
+});
+
+app.listen(port, () => {
+  console.log(`Backend listening on http://localhost:${port}`);
+});

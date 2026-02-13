@@ -1,0 +1,27 @@
+# Render service definitions for je-vous-aime
+# Visit https://render.com/docs/render-yaml for more info
+
+services:
+  - type: web_service
+    name: je-vous-aime-backend
+    env: node
+    region: oregon
+    plan: free
+    repo: .
+    branch: main
+    buildCommand: "cd backend && npm install"
+    startCommand: "cd backend && npm start"
+    envVars:
+      - key: PORT
+        value: "4000"
+      # Do NOT put secrets here. Set `FIREBASE_SERVICE_ACCOUNT_KEY` on Render dashboard if you still use Firebase.
+    healthCheckPath: /health
+
+  - type: static_site
+    name: je-vous-aime-frontend
+    repo: .
+    branch: main
+    buildCommand: "cd frontend && npm install && npm run build"
+    publishPath: frontend/dist
+    region: oregon
+    plan: free
